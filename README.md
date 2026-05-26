@@ -1,194 +1,68 @@
 <p align="center">
   <h1 align="center">🏥 Node Health Watcher</h1>
-  <p align="center"><strong>Kubernetes 节点定时巡检与 IM 告警中心 / Scheduled K8s Node Health Inspection & Instant-Messaging Alerting</strong></p>
+  <p align="center"><strong>Kubernetes 节点定时巡检与 IM 告警中心 / Scheduled Node Health Inspection & Alerting</strong></p>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License">
   <img src="https://img.shields.io/badge/platform-linux%2Famd64-lightgrey" alt="Linux/amd64">
-  <img src="https://github.com/noneedtostudy/node-health-watcher/actions/workflows/ci.yml/badge.svg" alt="CI">
+  <img src="https://github.com/290298661-pixel/node-health-watcher/actions/workflows/ci.yml/badge.svg" alt="CI">
 </p>
-
----
-
-## 目录 / Table of Contents
-
-- [概述](#概述)
-- [快速开始](#快速开始)
-- [检查项](#检查项)
-- [架构](#架构)
-- [配置说明](#配置说明)
-- [开发](#开发)
-- [贡献](#贡献)
-- [许可证](#许可证)
-- [English](#english)
 
 ---
 
 ## 概述
 
-**Node Health Watcher** 是一款面向 K8s 集群节点的定时巡检与即时通信告警工具。它以中心化调度、SSH 远程巡检、分级告警与去重抑制为核心，让运维工程师无需手动登录每一台节点即可感知集群健康状态。
+**Node Health Watcher** 定时 SSH 进你的 K8s 节点，跑磁盘、内存、conntrack、kubelet、内核五项巡检，发现有异常就推飞书/钉钉——有状态的去重机制保证同一个问题只告警一次，恢复了还通知你。你不需要半夜起来手动 SSH 进 50 台节点。
 
-### 为什么需要 Node Health Watcher？
+### 它在工具链中的位置
 
-[node-guardian](https://github.com/noneedtostudy/node-guardian) 解决了"排查怎么做"——当你 SSH 进一台故障节点时，它有成套的诊断、加固与安全审计工具。但它解决不了"排查什么时候做"——你无法每天凌晨三点手动 SSH 进 50 个节点逐台检查。
+Node Health Watcher 是 [三部曲](https://github.com/290298661-pixel) 的**第二环**——"检测层"：
 
-**Node Health Watcher 填补了这个空白：** 它不需要你主动登录任何节点。定时调度 → SSH 巡检 → 比对阈值 → 有异常推飞书/钉钉，没异常保持静默。你只在需要处理问题时收到消息。
+| 项目 | 语言 | 回答的问题 |
+|------|------|-----------|
+| [Node Guardian](https://github.com/290298661-pixel/node-guardian) | Bash | 出了故障怎么排查和修复？ |
+| **Node Health Watcher** ← 你在这里 | Python | 什么时候该去排查？ |
+| [Game Fleet Director](https://github.com/290298661-pixel/game-server-orchestrator) | Go | 谁来操作游戏服本身？ |
+
+**选 Python 是因为** 这一层跑在控制节点上，需要 YAML 配置解析、并发 SSH 多节点、结构化解析输出、构造 JSON 推 IM webhook——每一步都在处理结构化数据，Python 天然适合。paramiko + APScheduler 的组合在百台节点规模内足够用，且文档丰富、企业环境对接方案完备。
 
 ### 核心原则
 
-| 原则 | 实现方式 |
-|------|---------|
-| **中心化调度** | 单点部署，APScheduler 驱动定时任务，支持 cron 表达式，无需在节点上安装 agent |
-| **分级告警** | 每个检查项定义 WARNING / CRITICAL 两级阈值，不同级别可路由至不同 IM 渠道 |
-| **去重抑制** | 有状态告警去重：同一节点同一告警项只发首条，恢复后发恢复通知，避免重复刷屏 |
-| **可扩展检查** | 基于抽象基类的检查插件体系，添加新检查项无需修改调度器和告警逻辑 |
-| **防御性执行** | SSH 超时、认证失败、节点不可达等异常全链路捕获，单节点失败不影响其余节点巡检 |
+| 原则 | 实现 |
+|------|------|
+| **无 agent** | 中心化调度，目标节点不需要装任何东西 |
+| **分级告警** | WARNING / CRITICAL 两级阈值，可按级别路由到不同 IM 渠道 |
+| **去重抑制** | 同一异常只发首条，恢复后发恢复通知，不刷屏 |
+| **插件化** | 基于 ABC 的检查插件体系，加新巡检项不用碰调度器和告警代码 |
+| **防御性执行** | SSH 超时、认证失败、节点不可达全链路捕获，单节点失败不阻塞其余 |
 
 ---
 
 ## 快速开始
 
 ```bash
-# 克隆仓库
-git clone https://github.com/noneedtostudy/node-health-watcher.git
-cd node-health-watcher
-
-# 安装依赖
+git clone https://github.com/290298661-pixel/node-health-watcher.git && cd node-health-watcher
 pip install -e .
 
-# 初始化配置文件
+# 初始化配置（按实际环境编辑）
 cp config/nodes.example.yaml config/nodes.yaml
 cp config/thresholds.example.yaml config/thresholds.yaml
 cp config/alerting.example.yaml config/alerting.yaml
+vim config/nodes.yaml config/alerting.yaml
 
-# 按实际情况编辑节点清单与告警配置
-vim config/nodes.yaml
-vim config/alerting.yaml
-
-# 干运行 — 立即执行一轮巡检，只输出结果，不发送告警
+# 干运行 — 巡检一轮，只看不告
 python -m node_health_watcher --dry-run
 
-# 启动定时调度器（默认每 5 分钟巡检一次）
-python -m node_health_watcher --interval 5m
-
-# 单次巡检并发送告警
+# 单次巡检 + 发送告警
 python -m node_health_watcher --once
 
-# 指定自定义 cron 表达式
-python -m node_health_watcher --cron "*/10 * * * *"
+# 启动定时调度（每 5 分钟）
+python -m node_health_watcher --interval 5m
 ```
 
-### 环境要求
-
-- **Python 3.10+**
-- **控制节点（部署本工具的主机）** 需能够 SSH 免密登录所有目标 K8s 节点
-- **目标节点** 需运行 Linux（内核 4.x+），无需安装任何额外组件
-- **可选依赖：** `cryptography`（Ed25519 密钥支持）、`rich`（终端彩色输出）
-- **journald 持久化：** 国内云服务器默认镜像常关闭 journald 持久化存储以节省磁盘。建议目标节点启用 `Storage=persistent`（`/etc/systemd/journald.conf`），否则 kubelet 日志扫描（PLEG 延迟、错误日志）将自动回退至读取 `/var/log/kubelet.log`
-
----
-
-## 检查项
-
-每项检查包含若干子项，每个子项独立判定、独立告警。所有检查通过 SSH 在目标节点上只读执行，不会修改任何系统状态。
-
-### disk — 磁盘检查
-
-```
-检查对象: 磁盘空间、inode、关键挂载点、I/O 延迟
-```
-
-**子检查项：**
-1. **空间使用率** — 遍历指定挂载点（默认 `/`、`/var/lib/kubelet`、`/var/lib/containerd`），超过阈值告警
-2. **inode 使用率** — 文件数耗尽比空间耗尽更难排查，独立检测 inode 占用
-3. **只读文件系统** — 检测关键挂载点是否因异常被 remount 为只读
-4. **磁盘 I/O 延迟**（可选）— 通过 `iostat` 检测磁盘平均等待时间
-
-**输出示例：**
-```
-[2026-05-24 10:15:32] [OK] [node-1] disk: / = 62% (阈值: 80%/90%)
-[2026-05-24 10:15:32] [WARN] [node-1] disk: /var/lib/kubelet = 86% (阈值: 80%/90%)
-[2026-05-24 10:15:32] [OK] [node-1] disk: inode / = 34% (阈值: 80%/90%)
-[2026-05-24 10:15:32] [OK] [node-1] disk: /var/lib/kubelet 读写正常
-```
-
-### memory — 内存检查
-
-```
-检查对象: 可用内存、Swap、OOM 事件
-```
-
-**子检查项：**
-1. **可用内存比例** — `MemAvailable` 低于阈值告警（比 `MemFree` 更准确反映可用量）
-2. **Swap 使用率** — K8s 节点通常应禁用 swap 或保持极低使用，swap 活动预示内存压力
-3. **近期 OOM 事件** — 在 `journalctl` / `dmesg` 中检索指定时间窗口内的 OOM Kill 记录
-4. **内存压力 Top-N 进程**（可选）— 输出内存占用最高的 N 个进程及对应 Pod
-
-**输出示例：**
-```
-[2026-05-24 10:15:32] [OK] [node-2] memory: MemAvailable = 45% (阈值: 20%/10%)
-[2026-05-24 10:15:32] [OK] [node-2] memory: Swap = 0% (阈值: 10%/30%)
-[2026-05-24 10:15:32] [CRIT] [node-2] memory: 过去 15 分钟内检测到 3 次 OOM Kill
-```
-
-### conntrack — 连接跟踪检查
-
-```
-检查对象: conntrack 表使用率、连接统计
-```
-
-**子检查项：**
-1. **表使用率（两级告警）** — ≥85% WARNING / ≥95% CRITICAL，按节点 `conntrack_max` 计算实际占比
-2. **表溢出丢包** — 通过 `/proc/sys/net/netfilter/nf_conntrack_count` 与 `nf_conntrack_max` 对比，同时检查 `nf_conntrack_drop` 计数器
-3. **TIME_WAIT 连接堆积** — 高并发短连接场景下 TIME_WAIT 堆积先于 conntrack 耗尽出现
-
-**输出示例：**
-```
-[2026-05-24 10:15:32] [OK] [node-3] conntrack: 表使用率 = 23% (阈值: 85%/95%)
-[2026-05-24 10:15:32] [OK] [node-3] conntrack: nf_conntrack_drop = 0
-[2026-05-24 10:15:32] [WARN] [node-3] conntrack: TIME_WAIT 连接数 = 12438 (阈值: 10000)
-```
-
-### kubelet — Kubelet 健康检查
-
-```
-检查对象: kubelet 服务状态、节点状态、关键日志
-```
-
-**子检查项：**
-1. **服务运行状态** — `systemctl is-active kubelet`，非 active 直接告警
-2. **节点 Ready 状态** — 通过 `kubectl` 检查节点是否 Ready（节点名优先使用 `k8s_node_name`，回退至 `hostname`）
-3. **PLEG 延迟** — 在 kubelet 日志中检索 PLEG (Pod Lifecycle Event Generator) 延迟告警（优先 journalctl，回退至 /var/log/kubelet.log）
-4. **近期关键错误** — 在指定时间窗口内过滤 `error|timeout|deadline|backoff|eviction` 模式（同样支持 journald → 文件日志回退）
-
-**输出示例：**
-```
-[2026-05-24 10:15:32] [OK] [node-1] kubelet: 服务 active (running)
-[2026-05-24 10:15:32] [OK] [node-1] kubelet: Node Ready=True
-[2026-05-24 10:15:32] [WARN] [node-1] kubelet: 检测到 PLEG 延迟 3.2s (阈值: 2s)
-[2026-05-24 10:15:32] [OK] [node-1] kubelet: 过去 15 分钟无关键错误
-```
-
-### kernel — 内核异常检查
-
-```
-检查对象: 内核日志异常、hung_task、文件系统错误
-```
-
-**子检查项：**
-1. **dmesg 关键事件** — 检索 `BUG|panic|segfault|WARNING|Hardware Error` 等内核异常
-2. **hung_task 检测** — 内核 hung_task 超时事件，通常指向 I/O 阻塞或死锁
-3. **EXT4/XFS 错误** — 检索文件系统级 I/O 错误、元数据损坏告警
-4. **内核 Oops 计数** — 启动以来的 kernel oops 数量变化
-
-**输出示例：**
-```
-[2026-05-24 10:15:32] [OK] [node-4] kernel: dmesg 无关键异常
-[2026-05-24 10:15:32] [OK] [node-4] kernel: 无 hung_task 事件
-[2026-05-24 10:15:32] [CRIT] [node-4] kernel: EXT4-fs error (device sdb1) — 文件系统元数据错误
-```
+**环境：** Python 3.10+ · 控制节点需 SSH 免密到目标节点 · 目标节点无需安装额外组件
 
 ---
 
@@ -197,85 +71,39 @@ python -m node_health_watcher --cron "*/10 * * * *"
 ```
 .
 ├── node_health_watcher/        # 应用主包
-│   ├── __init__.py
-│   ├── __main__.py             # CLI 入口（argparse）
+│   ├── __main__.py             # CLI 入口
 │   ├── scheduler.py            # APScheduler 编排引擎
 │   ├── config.py               # YAML 配置加载与校验
-│   ├── checks/                 # 检查插件
-│   │   ├── __init__.py
-│   │   ├── base.py             # 抽象检查基类（接口 + 结果模型）
-│   │   ├── disk.py             # 磁盘检查
-│   │   ├── memory.py           # 内存检查
-│   │   ├── conntrack.py        # 连接跟踪检查
-│   │   ├── kubelet.py          # Kubelet 健康检查
-│   │   └── kernel.py           # 内核异常检查
-│   ├── transport/              # 远程执行层
-│   │   ├── __init__.py
-│   │   ├── ssh.py              # paramiko SSH 客户端封装
+│   ├── checks/                 # 检查插件（5 项）
+│   │   ├── base.py             # ABC 基类 + CheckResult 模型
+│   │   ├── disk.py             # 空间 / inode / 只读 / I/O
+│   │   ├── memory.py           # MemAvailable / swap / OOM
+│   │   ├── conntrack.py        # 表使用率 / drop / TIME_WAIT
+│   │   ├── kubelet.py          # 服务状态 / Ready / PLEG / 错误日志
+│   │   └── kernel.py           # dmesg / hung_task / FS 错误
+│   ├── transport/
+│   │   ├── ssh.py              # paramiko SSH + 跳板机支持
 │   │   └── executor.py         # ThreadPoolExecutor 并发调度
-│   └── alert/                  # 告警输出
-│       ├── __init__.py
-│       ├── common.py           # 飞书/钉钉共享格式工具
-│       ├── feishu.py           # 飞书 Webhook 推送
-│       ├── dingtalk.py         # 钉钉 Webhook 推送
-│       └── dedup.py            # 有状态告警去重与恢复检测
-├── config/                     # 配置文件
-│   ├── nodes.example.yaml      # 节点清单模板
-│   ├── thresholds.example.yaml # 告警阈值模板
-│   └── alerting.example.yaml   # IM Webhook 路由模板
-├── tests/                      # pytest 单元测试
-│   ├── conftest.py             # 共享 fixtures（mock SSH、假节点）
-│   ├── test_disk.py
-│   ├── test_memory.py
-│   ├── test_conntrack.py
-│   ├── test_kubelet.py
-│   ├── test_kernel.py
-│   └── test_dedup.py
-├── .github/workflows/
-│   └── ci.yml                  # CI: ruff lint + pytest + coverage
-├── pyproject.toml
-└── README.md
+│   └── alert/
+│       ├── feishu.py           # 飞书交互式卡片
+│       ├── dingtalk.py         # 钉钉 Markdown
+│       └── dedup.py            # 有状态去重 + 恢复检测
+├── config/                     # 配置模板（nodes / thresholds / alerting）
+├── tests/                      # pytest（7 个文件，覆盖率 >85%）
+└── .github/workflows/ci.yml    # CI：ruff + pytest 矩阵（3.10-3.12）
 ```
 
 ### 设计决策
 
-**为什么用 Python 而不是继续用 Bash？**
+**为什么选 paramiko + ThreadPoolExecutor？** 百台节点内 5-10 线程足够——瓶颈在节点命令执行时间而非 SSH 握手。paramiko 是纯 Python 生态中最成熟的 SSH 库，对接跳板机、代理、PKey 方案完备。扩展到 500+ 节点时迁移 asyncssh 成本可控。
 
-node-guardian 选 Bash 是因为它跑在目标节点上，零运行时依赖。Node Health Watcher 跑在控制节点上，需要：结构化配置解析（YAML）→ 并发 SSH 多节点 → 结构化解析输出 → 构造 JSON 推送 IM webhook。这条链路每一步都在处理结构化数据，Python 天然适合。而且 APScheduler 的 cron 调度、线程池并发、IM webhook 签名计算，用 Bash 写会迅速失控。
+**为什么选 APScheduler 而不是 Linux cron？** 需要在代码内管理 cron 表达式和告警状态（去重字典）。cron 是进程级别的调度无状态，APScheduler 可以在同进程内直接读写 `DedupStore`，无需借助外部数据库或文件锁。
 
-**为什么选 paramiko + ThreadPoolExecutor 而不是 asyncssh？**
+**国内云环境适配** —— kubelet 日志扫描优先 journalctl，自动回退 `/var/log/kubelet.log`（国内云镜像默认关闭 journald 持久化）。SSH 默认 `WarningPolicy` 而非 `AutoAddPolicy`，需显式设置 `NHW_INSECURE_AUTOADD_HOST_KEY` 才放开。
 
-节点规模在百台以内时，5-10 个线程的 ThreadPoolExecutor 已经足够——瓶颈在节点命令执行时间而非 SSH 握手。paramiko 是纯 Python 生态中最成熟的选择，文档丰富，对接企业环境（跳板机、代理、PKey）方案完备。如果未来扩展到 500+ 节点，迁移到 asyncssh 的成本可控。
+### 告警去重
 
-**为什么选 APScheduler 而不是 Linux cron？**
-
-- **进程内调度**：无需依赖系统 crond，单进程即可部署，容器化友好
-- **misfire 处理**：任务积压时支持丢弃/合并/立即执行三种策略
-- **时区感知**：cron 表达式原生支持时区，不会因 UTC/本地时间搞混
-- **动态任务**：支持运行时增删检查任务，无需重启进程
-
-**告警去重机制**
-
-首次检测到异常 → 发告警并记录状态（节点+检查项+子项+级别）。后续巡检同一异常持续存在 → 抑制（不重复发送），仅在巡检日志中记录。异常恢复 → 发恢复通知，清除记录。
-
-状态存储默认使用内存 dict（轻量、零依赖）；可通过 `--state-file` 指定 JSON 文件路径实现进程重启后保留状态。
-
-```json
-{
-  "node-1": {
-    "disk:/var/lib/kubelet": {"level": "WARNING", "since": "2026-05-24T10:15:32"},
-    "memory:oom": {"level": "CRITICAL", "since": "2026-05-24T10:10:00"}
-  }
-}
-```
-
-**为什么每个检查项都有多个子检查？**
-
-单一指标只能告诉你"磁盘满了"，但不告诉你"为什么满"、"是不是刚满"、"是不是 inode 耗尽而非空间耗尽"。多维子检查组合才能给出可行动的告警。以 disk 为例：空间 90% + inode 35% → 单一大文件写入，空间 62% + inode 92% → 海量小文件，排查方向完全不同。
-
-**干运行模式**
-
-`--dry-run` 执行完整的巡检流程（SSH 连接 → 命令执行 → 结果解析），但跳过告警推送。适用于：上线前验证配置是否正确、调试阈值设定、验证 SSH 连通性。干运行输出与正常模式完全一致，日志中标注 `[DRY-RUN]`。
+首次异常 → 告警 + 记录状态。同一异常持续存在 → 抑制不重复发。异常恢复 → 发恢复通知 + 清除记录。状态默认内存 dict，`--state-file` 可指定 JSON 文件实现重启后保留。
 
 ---
 
@@ -477,7 +305,7 @@ group_routing:
 
 ```bash
 # 克隆并创建虚拟环境
-git clone https://github.com/noneedtostudy/node-health-watcher.git
+git clone https://github.com/290298661-pixel/node-health-watcher.git
 cd node-health-watcher
 python -m venv .venv && source .venv/bin/activate
 
@@ -565,7 +393,7 @@ class MyCheck(BaseCheck):
 
 ## 许可证
 
-MIT © 2026 [Shaohan He](https://github.com/noneedtostudy)
+MIT © 2026 [Shaohan He](https://github.com/290298661-pixel)
 
 ---
 
@@ -577,7 +405,7 @@ MIT © 2026 [Shaohan He](https://github.com/noneedtostudy)
 
 ### Why Node Health Watcher?
 
-[node-guardian](https://github.com/noneedtostudy/node-guardian) answers "how to troubleshoot" — when you SSH into a broken node, it provides a suite of diagnostic, hardening, and audit tools. But it doesn't answer "when to troubleshoot" — you can't manually SSH into 50 nodes at 3 AM every night.
+[node-guardian](https://github.com/290298661-pixel/node-guardian) answers "how to troubleshoot" — when you SSH into a broken node, it provides a suite of diagnostic, hardening, and audit tools. But it doesn't answer "when to troubleshoot" — you can't manually SSH into 50 nodes at 3 AM every night.
 
 **Node Health Watcher fills this gap:** zero manual login required. Scheduled inspection → SSH checks → threshold comparison → alert to Feishu/DingTalk if anomalous, stay silent if healthy. You only hear about problems that need your attention.
 
@@ -595,7 +423,7 @@ MIT © 2026 [Shaohan He](https://github.com/noneedtostudy)
 
 ```bash
 # Clone the repository
-git clone https://github.com/noneedtostudy/node-health-watcher.git
+git clone https://github.com/290298661-pixel/node-health-watcher.git
 cd node-health-watcher
 
 # Install dependencies
@@ -955,7 +783,7 @@ After each inspection, all anomalies are aggregated per node and pushed as a sin
 ## Development
 
 ```bash
-git clone https://github.com/noneedtostudy/node-health-watcher.git
+git clone https://github.com/290298661-pixel/node-health-watcher.git
 cd node-health-watcher
 python -m venv .venv && source .venv/bin/activate
 
@@ -1039,4 +867,4 @@ All PRs are automatically linted and tested via GitHub Actions.
 
 ## License
 
-MIT © 2026 [Shaohan He](https://github.com/noneedtostudy)
+MIT © 2026 [Shaohan He](https://github.com/290298661-pixel)
