@@ -9,8 +9,10 @@ import sys
 from pathlib import Path
 
 from node_health_watcher.alert.dedup import DedupStore
+from node_health_watcher.api import start_api_server
 from node_health_watcher.config import load_config
 from node_health_watcher.scheduler import run_once, start_scheduler
+from node_health_watcher.state import HealthState
 
 
 def _setup_logging(level: str, fmt: str = "plain") -> None:
@@ -47,6 +49,9 @@ def main() -> None:
     parser.add_argument("--cron", type=str, default=None, help="cron 表达式 (如 '*/10 * * * *')")
     parser.add_argument("--config-dir", type=str, default=None, help="配置文件目录")
     parser.add_argument("--state-file", type=str, default=None, help="告警状态持久化 JSON 文件路径")
+    parser.add_argument("--api-addr", type=str, default="0.0.0.0", help="HTTP API bind address")
+    parser.add_argument("--api-port", type=int, default=8080, help="HTTP API bind port")
+    parser.add_argument("--no-api", action="store_true", help="Disable HTTP API in scheduler mode")
     parser.add_argument("--log-level", type=str, default="INFO", help="日志级别")
     parser.add_argument("--log-format", type=str, default="plain", choices=["plain", "json"], help="日志格式")
     parser.add_argument("--version", action="store_true", help="显示版本号")
@@ -78,12 +83,18 @@ def main() -> None:
     if args.cron and args.interval:
         logger.warning("同时指定 --cron 和 --interval，--cron 优先，--interval 将被忽略")
 
+    health_state = HealthState(config)
+    api_server = None
+    if not args.no_api:
+        api_server = start_api_server(health_state, args.api_addr, args.api_port)
+
     scheduler = start_scheduler(
         config=config,
         dedup=dedup,
         interval=args.interval,
         cron=args.cron,
         dry_run=args.dry_run,
+        health_state=health_state,
     )
 
     _shutting_down = False
@@ -95,6 +106,8 @@ def main() -> None:
         _shutting_down = True
         logger.info("收到信号 %s，正在退出...", signum)
         scheduler.shutdown(wait=True)
+        if api_server:
+            api_server.shutdown()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown)

@@ -92,6 +92,21 @@ python -m node_health_watcher --interval 5m
 python -m node_health_watcher --cron "*/10 * * * *"
 ```
 
+### HTTP API
+
+When running in scheduler mode, NHW starts a small HTTP API on port `8080` by default:
+
+```bash
+python -m node_health_watcher --interval 5m --api-addr 0.0.0.0 --api-port 8080
+
+curl http://localhost:8080/api/v1/node-health
+curl http://localhost:8080/metrics
+```
+
+- `GET /api/v1/node-health` returns the latest node health snapshot under the `nodes` map.
+- `GET /metrics` returns Prometheus text metrics such as `nhw_node_health_score`,
+  `nhw_node_health_status`, `nhw_inspection_rounds_total`, and `nhw_healthy_node_ratio`.
+
 ## 目录结构
 
 ```text
@@ -207,6 +222,9 @@ dingtalk:
 | `--interval 5m` | 按固定间隔执行 |
 | `--cron "*/10 * * * *"` | 按 cron 表达式执行 |
 | `--state-file <path>` | 将告警去重状态持久化到 JSON 文件 |
+| `--api-addr 0.0.0.0` | HTTP API bind address |
+| `--api-port 8080` | HTTP API bind port |
+| `--no-api` | Disable HTTP API in scheduler mode |
 | `--log-level DEBUG` | 设置日志级别 |
 | `--log-format json` | 使用 JSON 日志 |
 

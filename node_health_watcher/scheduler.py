@@ -19,6 +19,7 @@ from node_health_watcher.alert.dingtalk import send_dingtalk, send_dingtalk_reco
 from node_health_watcher.alert.feishu import send_feishu, send_feishu_recovery
 from node_health_watcher.checks.base import CheckLevel
 from node_health_watcher.config import AppConfig, get_check_classes
+from node_health_watcher.state import HealthState
 from node_health_watcher.transport.executor import run_inspection
 
 logger = logging.getLogger(__name__)
@@ -81,7 +82,12 @@ def _partition_alerts(alerts, errors, node_map, group_routing, feishu_cfg, dingt
     return feishu_alerts, dingtalk_alerts, feishu_errors, dingtalk_errors
 
 
-def run_once(config: AppConfig, dedup: DedupStore, dry_run: bool = False) -> int:
+def run_once(
+    config: AppConfig,
+    dedup: DedupStore,
+    dry_run: bool = False,
+    health_state: HealthState | None = None,
+) -> int:
     """Execute a single inspection cycle. Returns number of anomalies."""
     check_instances = _build_check_instances(config)
     now = datetime.now(timezone.utc)
@@ -96,6 +102,8 @@ def run_once(config: AppConfig, dedup: DedupStore, dry_run: bool = False) -> int
         enabled_checks=config.global_checks,
     )
     elapsed = time.perf_counter() - start
+    if health_state:
+        health_state.record_inspection(config, results, errors, elapsed)
 
     criticals = [r for r in results if r.level == CheckLevel.CRITICAL]
     warnings = [r for r in results if r.level == CheckLevel.WARNING]
@@ -194,13 +202,14 @@ def start_scheduler(
     interval: str | None = None,
     cron: str | None = None,
     dry_run: bool = False,
+    health_state: HealthState | None = None,
 ) -> BackgroundScheduler:
     """Start APScheduler with the configured trigger. Returns the scheduler instance."""
     scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
 
     def job():
         try:
-            run_once(config, dedup, dry_run=dry_run)
+            run_once(config, dedup, dry_run=dry_run, health_state=health_state)
         except Exception as exc:
             logger.error("Inspection job failed: %s", exc, exc_info=True)
 

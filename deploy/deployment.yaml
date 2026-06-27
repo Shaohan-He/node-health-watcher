@@ -99,11 +99,25 @@ spec:
           args:
             - --interval=5m
             - --config-dir=/etc/nhw
+            - --api-addr=0.0.0.0
+            - --api-port=8080
             - --log-format=json
           ports:
             - name: api
               containerPort: 8080
               protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /api/v1/node-health
+              port: api
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/v1/node-health
+              port: api
+            initialDelaySeconds: 15
+            periodSeconds: 20
           volumeMounts:
             - name: config
               mountPath: /etc/nhw
